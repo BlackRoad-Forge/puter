@@ -23,8 +23,7 @@ const { asyncSafeSetInterval } = require('@heyputer/putility').libs.promise;
 const { v4: uuidv4 } = require('uuid');
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
-const BaseService = require('./BaseService');
-const { DB_WRITE } = require('./database/consts');
+const { BaseService } = require('./BaseService');
 const SESSION_CACHE_TTL_SECONDS = 5 * 60;
 const SESSION_CACHE_KEY_PREFIX = 'session-cache';
 
@@ -44,9 +43,7 @@ const SESSION_CACHE_KEY_PREFIX = 'session-cache';
 * - Provides methods to interact with sessions, including session creation, retrieval, and termination.
 */
 class SessionService extends BaseService {
-    _construct () {
-        this.sessions = {};
-    }
+    sessions = {};
 
     getSessionCacheKey (uuid) {
         return `${SESSION_CACHE_KEY_PREFIX}:${uuid}`;
@@ -62,7 +59,7 @@ class SessionService extends BaseService {
                 SESSION_CACHE_TTL_SECONDS,
             );
         } catch (e) {
-            this.log.warn('failed to cache session in redis', {
+            console.warn('failed to cache session in redis', {
                 uuid: session.uuid,
                 reason: e?.message || String(e),
             });
@@ -74,7 +71,7 @@ class SessionService extends BaseService {
         try {
             cachedSessionRaw = await redisClient.get(this.getSessionCacheKey(uuid));
         } catch (e) {
-            this.log.warn('failed to read session from redis', {
+            console.warn('failed to read session from redis', {
                 uuid,
                 reason: e?.message || String(e),
             });
@@ -98,7 +95,7 @@ class SessionService extends BaseService {
         try {
             await redisClient.del(this.getSessionCacheKey(uuid));
         } catch (e) {
-            this.log.warn('failed to delete cached session from redis', {
+            console.warn('failed to delete cached session from redis', {
                 uuid,
                 reason: e?.message || String(e),
             });
@@ -114,7 +111,7 @@ class SessionService extends BaseService {
     * @method _init
     */
     async _init () {
-        this.db = await this.services.get('database').get(DB_WRITE, 'session');
+        this.db = await this.services.get('database').get();
 
         (async () => {
             // TODO: change to 5 minutes or configured value
@@ -130,7 +127,7 @@ class SessionService extends BaseService {
             * @returns {Promise<void>} - Resolves when the interval is set.
             */
             asyncSafeSetInterval(async () => {
-                await this._update_sessions();
+                await this.#updateSessions();
             }, 2 * MINUTE);
         })();
     }
@@ -179,7 +176,7 @@ class SessionService extends BaseService {
     * @param {string} uuid - The UUID of the session to retrieve.
     * @returns {Object|undefined} The session object with internal values removed, or undefined if the session does not exist.
     */
-    async get_session_ (uuid) {
+    async #getSession (uuid) {
         let session = await this.getCachedSession(uuid);
         if ( session ) {
             session.last_touch = Date.now();
@@ -187,7 +184,7 @@ class SessionService extends BaseService {
             await this.cacheSession(session);
             return session;
         }
-        ;[session] = await this.db.read(
+        ;[session] = await this.db.tryHardRead(
             'SELECT * FROM `sessions` WHERE `uuid` = ? LIMIT 1',
             [uuid],
         );
@@ -213,17 +210,17 @@ class SessionService extends BaseService {
     * @param {string} uuid - The unique identifier for the session to retrieve.
     * @returns {Promise<Object|undefined>} The session object with internal values removed, or undefined if not found.
     */
-    async get_session (uuid) {
-        const session = await this.get_session_(uuid);
+    async getSession (uuid) {
+        const session = await this.#getSession(uuid);
         if ( session ) {
             session.last_touch = Date.now();
             session.meta.last_activity = (new Date()).toISOString();
             await this.cacheSession(session);
         }
-        return this.remove_internal_values_(session);
+        return this.#removeInternalValues(session);
     }
 
-    remove_internal_values_ (session) {
+    #removeInternalValues (session) {
         if ( session === undefined ) return;
 
         const copy = {
@@ -242,7 +239,7 @@ class SessionService extends BaseService {
                 sessions.push(session);
             }
         }
-        return sessions.map(this.remove_internal_values_.bind(this));
+        return sessions.map(this.#removeInternalValues.bind(this));
     }
 
     /**
@@ -260,8 +257,7 @@ class SessionService extends BaseService {
         );
     }
 
-    async _update_sessions () {
-        this.log.tick('UPDATING SESSIONS');
+    async #updateSessions () {
         const now = Date.now();
         const keys = Object.keys(this.sessions);
 
@@ -270,7 +266,6 @@ class SessionService extends BaseService {
         for ( const key of keys ) {
             const session = this.sessions[key];
             if ( now - session.last_store > 5 * MINUTE ) {
-                this.log.debug(`storing session meta: ${ session.uuid}`);
                 const unix_ts = Math.floor(now / 1000);
                 const { anyRowsAffected } = await this.db.write(
                     'UPDATE `sessions` ' +
